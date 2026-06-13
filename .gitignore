@@ -1,0 +1,11 @@
+data/
+*.pyc
+__pycache__/
+.env
+*.log
+pipeline_output.txt
+derby.log
+metastore_db/
+spark-warehouse/
+.idea/
+.vscode/
