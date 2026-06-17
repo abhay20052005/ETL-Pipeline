@@ -3,9 +3,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, count, sum, avg
 
 def main():
-    print("[INFO] Generating Analytics Report from Data Warehouse...")
-    
-    # We are initializing our spark session 
+    print("Generating Analytics Report from Data Warehouse...")
     spark = SparkSession.builder \
         .appName("NYC_Taxi_Warehouse_Report") \
         .config("spark.driver.extraJavaOptions", "-Djava.security.manager=allow") \
@@ -14,8 +12,7 @@ def main():
     
     spark.sparkContext.setLogLevel("ERROR")
 
-    # Read Star Schema tables
-    print(f"[INFO] Reading Star Schema from {config.WAREHOUSE_PATH}")
+    print(f"Reading Star Schema from {config.WAREHOUSE_PATH}")
     try:
         fact_trips = spark.read.parquet(config.WAREHOUSE_PATH + "fact_trips")
         dim_payment = spark.read.parquet(config.WAREHOUSE_PATH + "dim_payment")
@@ -24,7 +21,7 @@ def main():
         except Exception:
             dim_zone = None
     except Exception as e:
-        print("[ERROR] Warehouse not found. Did you run etl_pipeline.py first?")
+        print("Warehouse not found. Did you run etl_pipeline.py first?")
         return
 
     total_trips = fact_trips.count()
@@ -37,7 +34,6 @@ def main():
     print("--- Fact Table Schema ---")
     fact_trips.printSchema()
 
-    # Average Fare & Trip Distance
     print("--- Averages ---")
     avg_stats = fact_trips.select(
         avg("fare_amount").alias("avg_fare"),
@@ -47,7 +43,7 @@ def main():
     print(f"Average Fare:     ${avg_stats['avg_fare']:.2f}")
     print(f"Average Distance: {avg_stats['avg_distance']:.2f} miles\n")
 
-    # Top Pickup Zones
+    
     print("--- Top Pickup Zones ---")
     if dim_zone is not None:
         top_zones = fact_trips.join(dim_zone, fact_trips.pickup_zone_key == dim_zone.zone_key) \
@@ -62,7 +58,6 @@ def main():
             print(f"Zone {row['pickup_zone_key']:>3}: {row['count']:,} trips")
     
     print("\n--- Analytics: Payment Method Breakdown ---")
-    # Join with Dim_Payment
     payment_stats = fact_trips.join(dim_payment, "payment_key") \
         .groupBy("payment_type").count() \
         .orderBy(col("count").desc())

@@ -1,108 +1,97 @@
-# NYC Taxi ETL – quick‑start guide (by a 2‑yr engineer)
+## INTRO
+In this project i have created a data pipeline which works as a real world pipeline it takes various data in form of parquent files , it cleans it and divides the file into two folders one which is used to examine or analysis and one in rejected section and it converts it into a star schema ready for platforms. The code written follows modularity , testable and is fast.
 
-## What this repo does
-Hey! 👋 This is a tiny but **real‑world** data‑engineering pipeline that reads the NYC TLC Yellow‑Taxi parquet files, cleans them up and writes them out as a **star‑schema** ready for BI tools (Redshift, Snowflake, BigQuery … you name it).
+### TLDR
+* **Ingest** raw Parquet files from `data/raw/`
+* **Transform** the data by formatting timestamps, calculating trip duration, creating date and time fields, and converting payment codes into readable payment types
+* **Validate** the data by checking for invalid records. Trips with negative duration, fare amount, or distance are moved to `data/rejected/` along with a `rejection_reason` explaining why they were rejected
+* **Load** the cleaned data into a Star Schema consisting of `dim_date`, `dim_payment`, `dim_zone`, and `fact_trips` tables inside `data/warehouse/`, partitioned by `pickup_year` and `pickup_month` for faster querying
+* **Optional**: create Snowflake table scripts automatically and generate a basic analytics report to summarize key business insights from the trip data
 
-### TL;DR
-- **Ingest** raw parquet files from `data/raw/`
-- **Transform** timestamps, compute `trip_duration`, add time dimensions and map payment codes
-- **Validate** rows (negative duration/fare/distance are tossed into `data/rejected/` with a `rejection_reason` column)
-- **Load** a Star Schema (`dim_date`, `dim_payment`, `dim_zone`, `fact_trips`) into `data/warehouse/` – partitioned by `pickup_year`/`pickup_month`
-- **Optional**: generate Snowflake DDL and run a quick analytics report
 
 ---
 
-## Repo layout (after we moved everything out of `src/`)
+## Repo layout
 ```
 project-root/
 │
-├─ data/                     # data lake folders
-│   ├─ raw/                  # drop the original TLC parquet files here
-│   ├─ warehouse/            # happy, clean star‑schema tables
-│   └─ rejected/             # quarantine for bad rows (with reasons)
+├─ data/                     
+│   ├─ raw/                  
+│   ├─ warehouse/            
+│   └─ rejected/             
 │
-├─ transformations.py        # pure Spark helpers (duration, time dims, payment map)
-├─ quality_checks.py         # validation + split logic
-├─ warehouse_loader.py       # build dim/fact tables and write parquet
-├─ ddl_generator.py          # auto‑generate Snowflake‑compatible DDL
-├─ config.py                 # env vars, Windows winutils handling, Spark config
-├─ etl_run.py                # **entry‑point** – orchestrates everything
-├─ etl_pipeline.py           # thin deprecation wrapper (feel free to delete later)
-├─ generate_report.py        # tiny script that shows a quality report & sample queries
+├─ transformations.py        
+├─ quality_checks.py         
+├─ warehouse_loader.py       
+├─ ddl_generator.py          
+├─ config.py                 
+├─ etl_run.py                
+├─ etl_pipeline.py           
+├─ generate_report.py        
 │
-├─ tests/                    # pytest suite (4 tests, all pass)
+├─ tests/                    
 │   └─ test_pipeline.py
 │
-├─ sql/                      # generated DDL (`schema_report.sql`) + samples
+├─ sql/                      
 │   └─ schema_report.sql
 │
-├─ docs/                     # docs – architecture explained in plain English
+├─ docs/                     
 │   └─ architecture.md
 │
-├─ requirements.txt          # Python deps (pyspark, python‑dotenv, pytest)
-└─ README.md                 # you are reading it!
+├─ requirements.txt          
+└─ README.md                 
 ```
 
----
-
-## How to get it running (Windows friendly)
+## How to get it running
 1. **Install dependencies**
    ```bash
    pip install -r requirements.txt
    ```
 
 2. **Windows‑only prep**
-   - Install Java 21+ (Spark needs it). If you see a `SecurityManager` error, we already add `-Djava.security.manager=allow`.
-   - Download `winutils.exe` (and `hadoop.dll`) for Hadoop 3.3.x from the
-     [cdarlint/winutils](https://github.com/cdarlint/winutils) repo.
-   - Put them in `C:\hadoop\bin\`. `config.py` will pick them up automatically.
+* Install **Java 21 or a newer version**, as Spark requires Java to run. If you encounter a `SecurityManager` error, the project is already configured to handle it using the `-Djava.security.manager=allow` setting.
+* Download **`winutils.exe`** and **`hadoop.dll`** for Hadoop 3.3.x.
+* Place both files inside the `C:\hadoop\bin\` folder.
+* Once they are in the correct location, `config.py` will automatically detect and use them, so no additional configuration is needed.
 
-3. **Run the test suite** (makes sure our Spark functions behave as expected)
+
+
+3. **Run the test suite** 
    ```bash
    pytest tests/ -v
    ```
-   You should see **4 passed**.
+   You should see 4 passed.
 
 4. **Drop some raw data**
-   Grab a few months of NYC Yellow‑Taxi data (e.g. Jan‑Mar 2025) from the
+   Take a few months data of NYC Yellow‑Taxi data from the
    [TLC website](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page) and unzip the `.parquet` files into `data/raw/`.
 
 5. **Run the pipeline**
    ```bash
    python etl_run.py
    ```
-   You’ll see a friendly log, a data‑quality summary and the star‑schema written under `data/warehouse/`.
+   You’ll see some logs and data quality summary is generated and star schema is also generated in `data/warehouse/`.
 
-6. **Optional – peek at the warehouse**
+6. **Generate report from it**
    ```bash
    python generate_report.py
    ```
-    This prints a quick analytics snapshot (average fare, top zones, etc.) and also writes the Snowflake DDL to `sql/schema_report.sql`.
-
----
+    This prints a quick analytics reports and hows on terminal (average fare, top zones, etc.) and also writes the Snowflake DDL to `sql/schema_report.sql`.
 
 ## Why the partitioning matters
-We store `fact_trips` **by year & month** (`pickup_year=2025/pickup_month=01/…`).
-When a BI tool asks *“average fare for March 2025”* Spark only opens that single folder – that’s **partition pruning** and saves a ton of I/O.
-If you ever grow to a decade of data, the difference is night‑and‑day.
+We store `fact_trips` *by year & month*.
+When a tool asks *“average fare for March 2025”* Spark only opens that single folder – that’s **partition pruning** and saves all input output
 
----
+## Data Quality Checks
 
-## Data‑quality in a nutshell
-Bad rows are filtered out by three simple rules:
-- `trip_duration > 0`
-- `fare_amount >= 0`
-- `trip_distance >= 0`
-If any rule fails we add a `rejection_reason` string (e.g. `"negative_fare,time_inversion"`) and dump the record into `data/rejected/` for later audit.
+To ensure that only valid trip records are loaded into the warehouse, the pipeline applies three simple validation rules:
 
----
+trip_duration > 0
 
-## Gotchas / what you can delete safely
-- `etl_pipeline.py` is just a thin wrapper that prints a deprecation warning – you can remove it once you’re comfortable calling `etl_run.py` directly.
-- `.git/`, `.gitignore`, `.pytest_cache/`, `__pycache__/`, `requirements.txt` (if you’ve already installed deps) are not needed for the pipeline to run.
-- The JARs in `jars/snowflake-jdbc-3.13.17.jar` and `jars/spark-snowflake_2.13-3.1.9.jar` are only required if you actually write to Snowflake.
+fare_amount >= 0
 
----
+trip_distance >= 0
 
-## That’s it!
-Feel free to tweak the modules, add more quality rules or point the loader at a cloud warehouse. Happy hacking! 🚀
+If a record fails any of these checks, it is considered invalid.
+
+For every invalid record, a rejection_reason is added and the record is stored in data/rejected/ for future review and validation

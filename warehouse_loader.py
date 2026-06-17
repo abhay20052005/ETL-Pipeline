@@ -22,7 +22,7 @@ def load_dim_zone(spark: SparkSession, lookup_path: str = "data/raw/taxi_zone_lo
         dim_zone = spark.read.csv(lookup_path, header=True, inferSchema=True)
         return dim_zone.withColumnRenamed("LocationID", "zone_key")
     except Exception as e:
-        print(f"[WARNING] Could not read taxi_zone_lookup.csv from {lookup_path}: {e}")
+        print(f"Could not read taxi_zone_lookup.csv from {lookup_path}: {e}")
         return None
 
 def build_fact_trips(df: DataFrame) -> DataFrame:
@@ -49,7 +49,7 @@ def write_local_warehouse(
     warehouse_path: str,
     rejected_path: str
 ) -> None:
-    print("[INFO] Writing Star Schema to local warehouse (Partitioning Fact table)...")
+    print("Writing Star Schema to local warehouse (Partitioning Fact table)...")
     dim_date.write.mode("overwrite").parquet(os.path.join(warehouse_path, "dim_date"))
     dim_payment.write.mode("overwrite").parquet(os.path.join(warehouse_path, "dim_payment"))
     if dim_zone is not None:
@@ -60,10 +60,10 @@ def write_local_warehouse(
         .mode("overwrite") \
         .parquet(os.path.join(warehouse_path, "fact_trips"))
         
-    print("[INFO] Writing rejected records to quarantine zone...")
+    print("Writing rejected records to quarantine zone...")
     rejected_df.write.mode("overwrite").parquet(rejected_path)
     
-    print("[INFO] Local warehouse written successfully.")
+    print("Local warehouse written successfully.")
 
 def write_snowflake_warehouse(
     dim_date: DataFrame,
@@ -92,7 +92,7 @@ def write_snowflake_warehouse(
     )
 
     if has_real_creds:
-        print("[INFO] Snowflake credentials detected — writing to Snowflake...")
+        print("Snowflake credentials detected — writing to Snowflake...")
         snowflake_options = {
             "sfURL": sf_url_full,
             "sfUser": sf_user,
@@ -117,7 +117,7 @@ def write_snowflake_warehouse(
         write_df(fact_trips, "fact_trips")
         if dim_zone is not None:
             write_df(dim_zone, "dim_zone")
-        print("[INFO] Snowflake write completed.")
+        print("Snowflake write completed.")
     else:
-        print("[INFO] Snowflake credentials not fully configured — skipping Snowflake write.")
+        print("Snowflake credentials not fully configured — skipping Snowflake write.")
 

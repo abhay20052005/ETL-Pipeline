@@ -1,10 +1,6 @@
-# Star Schema Design — Big Apple Scalability Challenge
+# Star Schema Design 
 
-## Overview
-
-The data model follows the **Kimball Star Schema** methodology: a central **Fact table** surrounded by **Dimension tables**. This design is optimised for analytical query performance (OLAP) over transactional accuracy (OLTP).
-
----
+The data model follows the **Star Schema** methodology: a **Fact table** at the center connected to **Dimension tables** surrounding it. This design is optimised (OLAP) over (OLTP).
 
 ## Star Schema Diagram
 
@@ -66,33 +62,29 @@ The data model follows the **Kimball Star Schema** methodology: a central **Fact
                          └─────────────────────────┘
 ```
 
----
 
 ## Table Descriptions
 
 ### Fact_Trips (Grain: one row per taxi trip)
 
-| Column | Type | Description | Source |
-|--------|------|-------------|--------|
-| `trip_id` | BIGINT | Surrogate primary key | `monotonically_increasing_id()` |
-| `pickup_date_key` | INTEGER | FK → Dim_Date | Derived from `pickup_datetime` |
-| `pickup_zone_key` | INTEGER | FK → Dim_Geography | `PULocationID` |
-| `dropoff_zone_key` | INTEGER | FK → Dim_Geography | `DOLocationID` |
-| `payment_key` | INTEGER | FK → Dim_Payment | `payment_type` |
-| `fare_amount` | DECIMAL(10,2) | Base fare in USD | Raw field |
-| `trip_distance` | DECIMAL(10,2) | Distance in miles | Raw field |
-| `trip_duration` | DECIMAL(12,2) | Duration in seconds | Computed |
-| `passenger_count` | SMALLINT | Number of passengers | Raw field |
-| `total_amount` | DECIMAL(10,2) | Total charged | Raw field |
-| `tip_amount` | DECIMAL(10,2) | Tip paid | Raw field |
+| Column | Type | Description |
+|--------|------|-------------|
+| `trip_id` | BIGINT | Surrogate primary key |
+| `pickup_date_key` | INTEGER | FK → Dim_Date |
+| `pickup_zone_key` | INTEGER | FK → Dim_Geography |
+| `dropoff_zone_key` | INTEGER | FK → Dim_Geography |
+| `payment_key` | INTEGER | FK → Dim_Payment |
+| `fare_amount` | DECIMAL(10,2) | Base fare in USD |
+| `trip_distance` | DECIMAL(10,2) | Distance in miles |
+| `trip_duration` | DECIMAL(12,2) | Duration in seconds |
+| `passenger_count` | SMALLINT | Number of passengers |
+| `total_amount` | DECIMAL(10,2) | Total charged |
+| `tip_amount` | DECIMAL(10,2) | Tip paid |
 
-**Grain**: Each row represents **one completed taxi trip**.
-
----
 
 ### Dim_Date
 
-Slowly Changing Dimension **Type 0** (static calendar data — dates never change).
+Slowly Changing Dimension
 
 | Column | Type | Example |
 |--------|------|---------|
@@ -106,9 +98,6 @@ Slowly Changing Dimension **Type 0** (static calendar data — dates never chang
 | `day_of_week` | SMALLINT | `4` (Wednesday) |
 | `is_weekend` | BOOLEAN | `FALSE` |
 
-**Population**: Built from `DISTINCT pickup_date` values in the processed dataset.
-
----
 
 ### Dim_Geography
 
@@ -119,13 +108,9 @@ Slowly Changing Dimension **Type 0** (static calendar data — dates never chang
 | `borough` | VARCHAR | `Manhattan` |
 | `service_zone` | VARCHAR | `Yellow Zone` |
 
-**Source**: NYC TLC Taxi Zone Lookup CSV (265 zones covering all 5 boroughs + EWR).
-
 **Used twice** in Fact_Trips:
 - `pickup_zone_key` — where the trip started
 - `dropoff_zone_key` — where the trip ended
-
----
 
 ### Dim_Payment
 
@@ -135,13 +120,10 @@ Slowly Changing Dimension **Type 0** (static calendar data — dates never chang
 | `payment_type` | VARCHAR | `Credit card` |
 | `is_electronic` | BOOLEAN | `TRUE` |
 
-**Seed data** is pre-loaded from the TLC data dictionary (6 payment types).
-
----
 
 ## Design Decisions
 
-### Why Star Schema (not 3NF or Snowflake Schema)?
+### Why Star Schema
 
 | Criterion | Star Schema | Snowflake Schema | 3NF |
 |-----------|------------|-----------------|-----|
@@ -150,11 +132,25 @@ Slowly Changing Dimension **Type 0** (static calendar data — dates never chang
 | Storage | Slight redundancy | Less redundancy | Normalised |
 | BI tool compatibility | **Excellent** | Good | Poor |
 
-Star schema wins for analytical workloads. The slight storage overhead is negligible at modern storage costs.
+### Why is a Star Schema used?
 
-### Why is Dim_Geography used twice in Fact_Trips?
+A **Star Schema** is a popular design for analytics because it makes queries faster and easier to understand. Instead of joining many complex tables, analysts can work with one central fact table connected to a few dimension tables. Although it uses a little more storage space, the cost is negligible compared to the improvement in reporting and dashboard performance.
 
-Role-playing dimension — the same zone table serves two different roles (pickup and dropoff). This avoids duplicating the geographic data while supporting queries like:
+### Why is `Dim_Geography` used twice in `Fact_Trips`?
+
+`Dim_Geography` is used twice because a trip has **two different locations**: where it starts and where it ends. Rather than creating two separate geography tables with the same information, we reuse the same table for both purposes.
+
+This approach is known as a **role-playing dimension**. The table plays one role as the **pickup location** and another role as the **dropoff location**.
+
+This allows us to answer business questions such as:
+
+* Which areas generate the highest number of pickups?
+* Which areas receive the most dropoffs?
+* What are the most common routes between locations?
+* How many trips start in one zone and end in another?
+
+By reusing the same geography table, we avoid duplicating data, keep the model cleaner, and make it easier to maintain.
+
 ```sql
 -- Which pickup zones send the most trips to JFK?
 WHERE dropoff_zone_key = 132  -- JFK Airport
@@ -166,25 +162,24 @@ WHERE dropoff_zone_key = 132  -- JFK Airport
 - **Dim_Geography**: Type 1 — Overwrite if zone names change (rare)
 - **Dim_Payment**: Type 0 — TLC payment codes are stable
 
----
 
 ## Sample Analytics Queries
 
 ```sql
--- Average fare last month
+'''Average fare last month'''
 SELECT AVG(f.fare_amount)
 FROM Fact_Trips f
 JOIN Dim_Date d ON f.pickup_date_key = d.date_key
 WHERE d.year = 2022 AND d.month = 5;
 
--- Top 5 pickup zones by revenue
+'''Top 5 pickup zones by revenue'''
 SELECT g.zone_name, SUM(f.fare_amount) AS revenue
 FROM Fact_Trips f
 JOIN Dim_Geography g ON f.pickup_zone_key = g.zone_key
 GROUP BY g.zone_name
 ORDER BY revenue DESC LIMIT 5;
 
--- Revenue by borough
+'''Revenue'''
 SELECT g.borough, SUM(f.fare_amount) AS total_revenue
 FROM Fact_Trips f
 JOIN Dim_Geography g ON f.pickup_zone_key = g.zone_key
