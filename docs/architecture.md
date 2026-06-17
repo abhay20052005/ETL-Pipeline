@@ -1,291 +1,126 @@
-# =============================================================================
-# Big Apple Scalability Challenge — Architecture Documentation
-# =============================================================================
-# File   : docs/architecture.md
-# Author : Data Engineering Team
-# =============================================================================
-
-# Architecture Overview
-
-## Big Apple Scalability Challenge
-### End-to-End NYC Taxi Trip Data Engineering Pipeline
+We needed a **real‑world** data pipeline that could take the massive NYC TLC Yellow‑Taxi parquet dump, clean it, and spit out a tidy **star schema** ready for any BI platform. The goal was to keep the code **modular**, **testable**, and **fast** on a Windows laptop.
 
 ---
 
-## Table of Contents
-
-1. [System Overview](#system-overview)
-2. [Architecture Diagram](#architecture-diagram)
-3. [Component Descriptions](#component-descriptions)
-4. [ETL Workflow](#etl-workflow)
-5. [Partitioning Strategy](#partitioning-strategy)
-6. [Data Quality Strategy](#data-quality-strategy)
-7. [Technology Choices](#technology-choices)
-8. [Deployment Options](#deployment-options)
-
----
-
-## System Overview
-
-The **Big Apple Scalability Challenge** is a production-grade data engineering pipeline designed to process millions of NYC Taxi trip records using Apache Spark. The system ingests raw Parquet files from the NYC Taxi & Limousine Commission (TLC), applies data quality validation, transforms the data into a Star Schema, and loads it into a cloud data warehouse for analytics.
-
-**Key Design Goals:**
-- **Scalability** — Spark distributed processing handles datasets from GB to TB
-- **Data Quality** — Every record is validated; bad data is isolated and audited
-- **Analytics-Ready** — Star Schema enables fast BI queries with partition pruning
-- **Modularity** — Each concern (ingest, transform, validate, load) is decoupled
+## 1️⃣ System Overview
+| Piece | Why it matters |
+|------|----------------|
+| **Raw data** (`data/raw/`) | Parquet files straight from the NYC TLC website – immutable, source‑of‑truth. |
+| **Spark ETL engine** (`etl_run.py`) | Handles billions of rows in parallel, runs locally on your laptop (or any cluster). |
+| **Transformations** (`transformations.py`) | Computes `trip_duration`, adds time dimensions, maps payment codes. |
+| **Quality checks** (`quality_checks.py`) | Filters out impossible rows and records why they were rejected. |
+| **Warehouse** (`data/warehouse/`) | Star‑schema tables (`dim_date`, `dim_payment`, `dim_zone`, `fact_trips`). Partitioned by `pickup_year`/`pickup_month` for fast queries. |
+| **Rejected bucket** (`data/rejected/`) | Bad rows with a `rejection_reason` column – handy for audits. |
+| **DDL generator** (`ddl_generator.py`) | Auto‑creates Snowflake‑compatible `CREATE TABLE` statements. |
+| **Analytics demo** (`generate_report.py`) | Shows a quick quality report and sample analytics (avg fare, top zones). |
 
 ---
 
-## Architecture Diagram
-
+## 2️⃣ Architecture Diagram (text‑only, keep it simple)
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                      BIG APPLE SCALABILITY CHALLENGE                        │
-│                    End-to-End Data Engineering Pipeline                      │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-  ┌──────────────┐
-  │  DATA SOURCE │   NYC TLC Public Dataset (Parquet files)
-  │  nyc.gov/tlc │   ~100 MB – 500 MB per month, 12+ years of data
-  └──────┬───────┘
-         │ download / copy
-         ▼
-  ┌──────────────┐
-  │  data/raw/   │   Landing zone — raw Parquet files, immutable
-  │  (Bronze)    │   e.g. yellow_tripdata_2022-06.parquet
-  └──────┬───────┘
-         │ spark.read.parquet()
-         ▼
-  ┌──────────────────────────────────────────────────────┐
-  │                  SPARK ETL ENGINE                     │
-  │  ┌────────────┐  ┌──────────────┐  ┌──────────────┐  │
-  │  │  Ingest    │→ │  Transform   │→ │   Validate   │  │
-  │  │ (etl.py)   │  │(transform.py)│  │(quality_.py) │  │
-  │  └────────────┘  └──────────────┘  └──────┬───────┘  │
-  └────────────────────────────────────────────┼──────────┘
-                                               │
-                          ┌────────────────────┼──────────────────────┐
-                          │                    │                      │
-                          ▼                    ▼                      ▼
-                   ┌─────────────┐    ┌────────────────┐    ┌──────────────┐
-                   │data/rejected│    │ data/processed/ │    │  Validation  │
-                   │  (quarantine)│   │    (Silver)     │    │   Report     │
-                   │             │   │ Partitioned by  │    │  (console)   │
-                   └─────────────┘   │ pickup_year/    │    └──────────────┘
-                                     │ pickup_month    │
-                                     └───────┬─────────┘
-                                             │ spark.read.parquet()
-                                             ▼
-                                   ┌──────────────────────────┐
-                                   │   STAR SCHEMA BUILDER    │
-                                   │   (warehouse_loader.py)  │
-                                   │                          │
-                                   │  Dim_Date                │
-                                   │  Dim_Geography           │
-                                   │  Dim_Payment             │
-                                   │  Fact_Trips              │
-                                   └───────────┬──────────────┘
-                                               │
-                          ┌────────────────────┼────────────────────┐
-                          │                    │                    │
-                          ▼                    ▼                    ▼
-                   ┌────────────┐    ┌──────────────────┐   ┌─────────────┐
-                   │ Snowflake  │    │   BigQuery       │   │  Redshift   │
-                   │  COPY INTO │    │   bq load        │   │  COPY FROM  │
-                   └────────────┘    └──────────────────┘   └─────────────┘
++-------------------+   +---------------------+   +-------------------+
+|  data/raw/        | → | Spark ETL (etl_run) | → | data/warehouse/   |
+|  (source parquet) |   |  - transforms       |   |  (star schema)    |
++-------------------+   |  - validates        |   +-------------------+
+                        |  - loads            |
+                        +---------------------+
+                                 |
+                                 v
+                         +-------------------+
+                         | data/rejected/    |
+                         | (quarantined bad |
+                         |   records)        |
+                         +-------------------+
 ```
 
 ---
 
-## Component Descriptions
-
-### `src/ingest.py` — Data Ingestion
-Handles data acquisition from the NYC TLC public dataset or generates synthetic sample data for offline testing.
-
-| Feature | Detail |
-|---------|--------|
-| Download | `urllib.request` — no external dependency |
-| Sample generation | `pandas` + `numpy` with injected bad records |
-| Output | `data/raw/*.parquet` |
-
-### `src/transformations.py` — Data Transformation
-Applies a deterministic chain of column-level transformations:
-
-| Step | Transformation |
-|------|---------------|
-| 1 | Rename `tpep_*` → `pickup_datetime`, `dropoff_datetime` |
-| 2 | Cast to `TimestampType` |
-| 3 | Derive `pickup_date`, `pickup_year`, `pickup_month`, `pickup_hour` |
-| 4 | Compute `trip_duration` (seconds) |
-| 5 | Generate `trip_id` (monotonically increasing) |
-| 6 | Map `payment_type` codes → human-readable labels |
-| 7 | Fill non-critical nulls with `0` defaults |
-| 8 | Drop superseded raw columns |
-
-### `src/quality_checks.py` — Data Validation
-Evaluates 5 quality rules per record:
-
-| Rule | Condition | Action |
-|------|-----------|--------|
-| `non_positive_duration` | `trip_duration ≤ 0` | Reject |
-| `negative_fare` | `fare_amount < 0` | Reject |
-| `negative_distance` | `trip_distance < 0` | Reject |
-| `time_inversion` | `dropoff < pickup` | Reject |
-| `null_required_fields` | critical column is NULL | Reject |
-
-### `src/etl.py` — Pipeline Orchestrator
-Sequences all stages, manages SparkSession lifecycle, and prints the validation report.
-
-### `src/warehouse_loader.py` — Star Schema + Warehouse Loading
-Builds dimension and fact DataFrames and generates SQL COPY scripts for all three major cloud warehouses.
+## 3️⃣ Component Descriptions (what each file does)
+- **`etl_run.py`** – the *main* orchestrator. Boots a `SparkSession`, applies the env fixes for Windows, and calls the other modules in order.
+- **`transformations.py`** – pure Spark helpers:
+  - `compute_trip_duration` – seconds between pickup & dropoff.
+  - `add_time_dimensions` – creates `pickup_date`, `pickup_year`, `pickup_month`.
+  - `map_payment_types` – turns numeric payment codes into human‑readable strings.
+- **`quality_checks.py`** – validates each row:
+  - `trip_duration > 0`
+  - `fare_amount >= 0`
+  - `trip_distance >= 0`
+  - Returns a **valid** DataFrame and a **rejected** DataFrame with a `rejection_reason` column.
+- **`warehouse_loader.py`** – builds the dimension tables (`dim_date`, `dim_payment`, `dim_zone`) and the fact table (`fact_trips`). Writes everything as parquet, partitioning the fact by year+month.
+- **`ddl_generator.py`** – inspects the Spark DataFrames and spits out Snowflake‑compatible `CREATE TABLE` DDL. Saved to `sql/schema_report.sql`.
+- **`generate_report.py`** – reads the star schema back, prints a quick data‑quality summary and runs a few demo analytics queries.
 
 ---
 
-## ETL Workflow
-
-```
-Step 1: READ
-  spark.read.parquet("data/raw/")
-  → Schema auto-inferred from Parquet metadata
-  → Single DataFrame representing all raw files
-
-Step 2: TRANSFORM  [transformations.py]
-  → rename columns → cast types → derive date fields
-  → compute trip_duration → assign trip_id
-  → map payment codes → fill nulls → drop junk columns
-
-Step 3: VALIDATE  [quality_checks.py]
-  → apply 5 quality rules as boolean flag columns
-  → split into valid_df and rejected_df
-  → enrich rejected_df with rejection_reason
-
-Step 4: WRITE VALID  [etl.py → TaxiDataWriter]
-  → valid_df.write.partitionBy("pickup_year","pickup_month").parquet(...)
-  → Produces folder hierarchy: data/processed/pickup_year=2022/pickup_month=6/
-
-Step 5: WRITE REJECTED  [etl.py → TaxiDataWriter]
-  → rejected_df.write.parquet("data/rejected/")
-  → Preserved for audit, reprocessing, or root-cause analysis
-
-Step 6: REPORT
-  → Print validation summary to console
-  → Exit code 1 if bad-data rate > 10%
+## 4️⃣ ETL Workflow (step‑by‑step)
+```text
+1. READ   → spark.read.parquet('data/raw/')
+2. TRANSFORM → compute_trip_duration → add_time_dimensions → map_payment_types
+3. VALIDATE → split_valid_invalid_records (quality_checks)
+4. WRITE VALID → warehouse_loader writes dim tables + fact_trips (partitioned)
+5. WRITE REJECTED → rejected rows go to data/rejected/
+6. REPORT → prints a quality summary & optional DDL generation
 ```
 
 ---
 
-## Partitioning Strategy
-
-### Why Partition?
-
-Without partitioning, every query must scan the **entire dataset** — even if it only needs one month. On a 5-year dataset (60+ month-partitions), this means scanning 60× more data than necessary.
-
-### How Partitioning Works
-
+## 5️⃣ Partitioning Strategy (why we do it)
+We store `fact_trips` **by year and month**:
 ```
-data/processed/
-  pickup_year=2019/
-    pickup_month=1/  ← ~50 MB
-    pickup_month=2/
-    ...
-  pickup_year=2020/
-    ...
-  pickup_year=2022/
-    pickup_month=6/  ← only this directory is opened for WHERE year=2022 AND month=6
+data/warehouse/fact_trips/
+  ├─ pickup_year=2025/
+  │    └─ pickup_month=01/
+  │    └─ pickup_month=02/
+  │    …
 ```
-
-### Partition Pruning in Action
-
-```sql
--- SQL query with predicate
-SELECT AVG(fare_amount)
-FROM processed_trips
-WHERE pickup_year = 2022 AND pickup_month = 6;
-
--- Spark physical plan shows:
--- PartitionFilters: [isnotnull(pickup_year), (pickup_year = 2022),
---                   isnotnull(pickup_month), (pickup_month = 6)]
--- → Only 1 of 60 partitions is opened (98% I/O reduction)
-```
-
-### Configuration That Enables This
-
-```python
-.config("spark.sql.parquet.filterPushdown", "true")   # ← partition pruning
-.config("spark.sql.adaptive.enabled", "true")          # ← runtime optimization
-```
-
-### Partitioning Options
-
-| Strategy | Columns | Best For |
-|----------|---------|----------|
-| **Year + Month** | `pickup_year, pickup_month` | Monthly dashboards, billing (recommended) |
-| **Date** | `pickup_date` | Day-level drilldown, operational reports |
-| **Year only** | `pickup_year` | Coarser granularity, fewer directories |
+When a query filters on `pickup_year = 2025 AND pickup_month = 01`, Spark only opens that one folder – a huge I/O win (often > 95 % reduction). This is called **partition pruning** and is the secret sauce for fast BI dashboards.
 
 ---
 
-## Data Quality Strategy
-
+## 6️⃣ Data‑Quality Strategy (how we keep data clean)
+```text
+Raw rows → quality_checks →
+  ✅ valid → go to warehouse
+  ❌ invalid → go to data/rejected/ with `rejection_reason`
 ```
-                    ┌─────────────────────┐
-                    │    Raw Records      │
-                    │   (all ingested)    │
-                    └──────────┬──────────┘
-                               │
-                    ┌──────────▼──────────┐
-                    │  Quality Checker    │
-                    │  5 validation rules │
-                    └──────────┬──────────┘
-                               │
-              ┌────────────────┴───────────────┐
-              │                                │
-    ┌─────────▼──────────┐          ┌──────────▼────────────┐
-    │   VALID records    │          │  REJECTED records      │
-    │                    │          │  + rejection_reason    │
-    │  data/processed/   │          │  (comma-sep rule names)│
-    │  (partitioned)     │          │  data/rejected/        │
-    └────────────────────┘          └───────────────────────┘
-```
-
-**Rejection reason** column example:
-```
-"negative_fare,time_inversion"
-```
-This enables analysts to triage bad data by rule type without re-running the pipeline.
+The `rejection_reason` column concatenates the rule names that failed (e.g. `"negative_fare,time_inversion"`). That makes downstream debugging painless.
 
 ---
 
-## Technology Choices
-
-| Layer | Technology | Reason |
-|-------|-----------|--------|
-| Processing | Apache Spark (PySpark) | Distributed, fault-tolerant, handles TB-scale |
-| Storage format | Parquet | Columnar, compressed, predicate push-down |
-| Orchestration | CLI (`argparse`) | Simple; plug into Airflow/Prefect as operator |
-| Warehouse | Snowflake / BigQuery / Redshift | Industry-standard cloud DWH |
-| Testing | pytest + Spark local mode | Fast, no cluster needed |
-| Containerisation | Docker + docker-compose | Reproducible dev environment |
+## 7️⃣ Tech Stack (what we actually use)
+| Layer | Tool | Reason |
+|-------|------|--------|
+| Processing | **Apache Spark (PySpark)** | Distributed, handles TB‑scale data, built‑in Parquet support |
+| Storage format | **Parquet** | Columnar, compressed, predicate push‑down |
+| Orchestration | **CLI (`etl_run.py`)** | Simple, easy to wrap in Airflow/Prefect later |
+| Warehouse (optional) | **Redshift / Snowflake / BigQuery** | Industry‑standard analytical DWH |
+| Testing | **pytest + Spark local mode** | Fast, no cluster required |
+| Containerisation | **Docker** (provided in `Dockerfile`/`docker‑compose.yml`) | Reproducible dev environment |
 
 ---
 
-## Deployment Options
+## 8️⃣ Deployment Options (how to run it)
+- **Local dev** (what most of us use):
+  ```bash
+  pip install -r requirements.txt
+  pytest tests/ -v   # sanity check
+  python etl_run.py   # run the pipeline
+  ```
+- **Docker** – spin up a container with Spark pre‑installed:
+  ```bash
+  docker compose up   # builds & runs the ETL inside a container
+  ```
+- **Cloud** – drop the same code onto EMR, Dataproc, or Azure HDInsight. Just point `config.py` at an S3/GCS bucket and let Spark read/write from there.
 
-### Local Development
-```bash
-python src/ingest.py --sample          # generate test data
-python src/etl.py --input data/raw/   # run pipeline
-pytest tests/ -v                       # run tests
-```
+---
 
-### Docker
-```bash
-docker-compose up                      # spin up Spark + pipeline
-```
+## 9️⃣ What you can safely delete (optional cleanup)
+- `etl_pipeline.py` – a thin deprecation shim, not needed after you commit to `etl_run.py`.
+- `.git/`, `.gitignore`, `.pytest_cache/`, `__pycache/` – version‑control and test caches.
+- `requirements.txt` – only needed the first time you install dependencies.
+- `jars/snowflake-jdbc-3.13.17.jar`, `jars/spark-snowflake_2.13-3.1.9.jar` – required only if you actually write to Snowflake.
 
-### Cloud (Production)
-- **AWS EMR** — submit as a `spark-submit` job, S3 as data lake
-- **Google Dataproc** — submit to Dataproc cluster, GCS as data lake
-- **Azure HDInsight / Databricks** — Azure Blob Storage or ADLS
-- **Snowflake Snowpark** — run Spark transformations natively in Snowflake
+---
+
+## 🎉 That’s all, folks!
+If you need to add more quality rules, drop a new dimension, or point the loader at a cloud warehouse – just edit the appropriate module. The code is deliberately small and well‑tested, so you can iterate quickly. Happy hacking! 🚀
